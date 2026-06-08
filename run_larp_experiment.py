@@ -564,6 +564,50 @@ def experiment_anchor_counts(
     return rows
 
 
+def experiment_candidate_recall(
+    embeddings_by_model: dict[str, np.ndarray],
+    anchor_indices: np.ndarray,
+    top_ks: list[int],
+    pool_sizes: list[int],
+) -> list[dict[str, object]]:
+    rows = []
+    for model_name, embeddings in embeddings_by_model.items():
+        n = len(embeddings)
+        abs_dist = cosine_distance_matrix(embeddings)
+        rel_sigs = anchor_relative_signature(embeddings, anchor_indices)
+        rel_dist = cosine_distance_matrix(rel_sigs)
+        abs_order = np.argsort(abs_dist, axis=1)[:, 1:]
+        rel_order = np.argsort(rel_dist, axis=1)[:, 1:]
+
+        for top_k in top_ks:
+            if top_k >= n:
+                continue
+            true_sets = [set(row[:top_k]) for row in abs_order]
+            for pool_size in pool_sizes:
+                if pool_size >= n:
+                    continue
+                recalls = []
+                hit_all = []
+                hit_any = []
+                for i in range(n):
+                    pool = set(rel_order[i, :pool_size])
+                    hits = len(true_sets[i] & pool)
+                    recalls.append(hits / top_k)
+                    hit_all.append(hits == top_k)
+                    hit_any.append(hits > 0)
+                rows.append(
+                    {
+                        "model": model_name,
+                        "top_k": top_k,
+                        "pool_size": pool_size,
+                        "mean_recall": float(np.mean(recalls)),
+                        "all_top_k_contained": float(np.mean(hit_all)),
+                        "any_hit": float(np.mean(hit_any)),
+                    }
+                )
+    return rows
+
+
 def experiment_perturbation(
     embeddings: np.ndarray,
     baseline_n: int,
@@ -659,7 +703,31 @@ def plot_perturbation(rows: list[dict[str, object]], path: Path) -> None:
     plt.close(fig)
 
 
-def write_report(path: Path, args, corpus, cross_rows, anchor_rows, perturb_rows, models_completed) -> None:
+def plot_candidate_recall(rows: list[dict[str, object]], path: Path) -> None:
+    top_k = 10 if any(r["top_k"] == 10 for r in rows) else rows[0]["top_k"]
+    selected = [r for r in rows if r["top_k"] == top_k]
+    models = list(dict.fromkeys(r["model"] for r in selected))
+    fig, ax = plt.subplots(figsize=(11, 6.5))
+    for model in models:
+        model_rows = sorted([r for r in selected if r["model"] == model], key=lambda r: r["pool_size"])
+        ax.plot(
+            [r["pool_size"] for r in model_rows],
+            [r["mean_recall"] for r in model_rows],
+            marker="o",
+            label=model.split("/")[-1],
+        )
+    ax.set_ylim(0, 1.02)
+    ax.set_xlabel("Relative-signature candidate pool size")
+    ax.set_ylabel(f"Recall of raw top-{top_k}")
+    ax.set_title("Relative index candidate recall before raw reranking")
+    ax.grid(alpha=0.25)
+    ax.legend(frameon=False, ncol=2)
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def write_report(path: Path, args, corpus, cross_rows, anchor_rows, perturb_rows, candidate_rows, models_completed) -> None:
     by_lang = {}
     for row in corpus:
         lang = row.get("language") or "unknown"
@@ -705,6 +773,21 @@ def write_report(path: Path, args, corpus, cross_rows, anchor_rows, perturb_rows
             f"{r['spearman_vs_absolute']:.4f} | {r['top1_overlap_vs_absolute']:.4f} |"
         )
 
+    lines.extend(["", "## Experiment 4: Candidate Recall", ""])
+    if candidate_rows:
+        preferred_top_k = 10 if any(r["top_k"] == 10 for r in candidate_rows) else candidate_rows[0]["top_k"]
+        lines.append(f"Mean recall of each model's raw top-{preferred_top_k} inside the relative-signature candidate pool.")
+        lines.append("")
+        lines.append("| Model | Pool | Mean Recall | All Top-k Contained | Any Hit |")
+        lines.append("|---|---:|---:|---:|---:|")
+        for r in candidate_rows:
+            if r["top_k"] != preferred_top_k:
+                continue
+            lines.append(
+                f"| {r['model'].split('/')[-1]} | {r['pool_size']} | {r['mean_recall']:.4f} | "
+                f"{r['all_top_k_contained']:.4f} | {r['any_hit']:.4f} |"
+            )
+
     lines.extend(
         [
             "",
@@ -741,6 +824,8 @@ def parse_args():
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--max-spearman-pairs", type=int, default=200_000)
     parser.add_argument("--allow-remote-code", action="store_true")
+    parser.add_argument("--top-ks", nargs="*", type=int, default=[1, 5, 10])
+    parser.add_argument("--candidate-pools", nargs="*", type=int, default=[10, 25, 50, 75, 100])
     return parser.parse_args()
 
 
@@ -807,16 +892,25 @@ def main() -> None:
         [0.10, 0.25, 0.50, 1.00],
         min(anchor_count, baseline_n // 2),
     )
+    candidate_rows = experiment_candidate_recall(
+        embeddings,
+        anchor_indices,
+        args.top_ks,
+        args.candidate_pools,
+    )
 
     table_prefix = f"{args.run_name}_"
     figure_prefix = f"{args.run_name}_"
     write_csv(paths["tables"] / f"{table_prefix}cross_model_preservation.csv", cross_rows)
     write_csv(paths["tables"] / f"{table_prefix}anchor_count_curve.csv", anchor_rows)
     write_csv(paths["tables"] / f"{table_prefix}corpus_perturbation.csv", perturb_rows)
+    write_csv(paths["tables"] / f"{table_prefix}candidate_recall.csv", candidate_rows)
     if cross_rows:
         plot_cross_model(cross_rows, paths["figures"] / f"{figure_prefix}cross_model_mrr.png")
     plot_anchor_counts(anchor_rows, paths["figures"] / f"{figure_prefix}anchor_count_curve.png")
     plot_perturbation(perturb_rows, paths["figures"] / f"{figure_prefix}corpus_perturbation.png")
+    if candidate_rows:
+        plot_candidate_recall(candidate_rows, paths["figures"] / f"{figure_prefix}candidate_recall.png")
     write_report(
         root / f"larp_results_{args.run_name}.md",
         args,
@@ -824,6 +918,7 @@ def main() -> None:
         cross_rows,
         anchor_rows,
         perturb_rows,
+        candidate_rows,
         list(embeddings),
     )
 
