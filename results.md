@@ -165,9 +165,87 @@ This is strong evidence for using relative signatures as a first-stage candidate
 
 Artifacts:
 
-- `larp_results_large_minilm_candidate.md`
+- `reports/larp_results_large_minilm_candidate.md`
 - `outputs/tables/large_minilm_candidate_candidate_recall.csv`
 - `outputs/figures/large_minilm_candidate_candidate_recall.png`
+
+For a larger 10,000-document run with `sentence-transformers/all-MiniLM-L6-v2`, 256 fixed anchors, and 1,000 sampled queries:
+
+| Candidate Pool | Mean Recall of Raw Top-10 | All Top-10 Contained | Any Hit |
+|---:|---:|---:|---:|
+| 50 | 0.8497 | 0.4070 | 1.0000 |
+| 100 | 0.9130 | 0.5730 | 1.0000 |
+| 250 | 0.9643 | 0.7890 | 1.0000 |
+| 500 | 0.9825 | 0.8810 | 1.0000 |
+| 1000 | 0.9925 | 0.9430 | 1.0000 |
+
+For raw top-5:
+
+| Candidate Pool | Mean Recall of Raw Top-5 | All Top-5 Contained | Any Hit |
+|---:|---:|---:|---:|
+| 50 | 0.9130 | 0.7190 | 0.9990 |
+| 100 | 0.9512 | 0.8280 | 1.0000 |
+| 250 | 0.9800 | 0.9220 | 1.0000 |
+| 500 | 0.9904 | 0.9620 | 1.0000 |
+| 1000 | 0.9954 | 0.9780 | 1.0000 |
+
+For raw top-1:
+
+| Candidate Pool | Recall of Raw Top-1 |
+|---:|---:|
+| 50 | 0.9620 |
+| 100 | 0.9780 |
+| 250 | 0.9900 |
+| 500 | 0.9930 |
+| 1000 | 0.9970 |
+
+10k artifacts:
+
+- `experiments/tenk_minilm_candidate/larp_results_tenk_minilm_candidate.md`
+- `experiments/tenk_minilm_candidate/outputs/tables/tenk_minilm_candidate_candidate_recall.csv`
+- `experiments/tenk_minilm_candidate/outputs/figures/tenk_minilm_candidate_candidate_recall.png`
+
+## Search Speed And Tree Traversal
+
+A quick tree-style benchmark was run on the 10k relative signatures.
+
+Methods:
+
+- `exact_relative`: vectorized matrix multiply over all 10k relative signatures
+- `rp_forest`: a simple B-tree-like random-projection forest over relative signatures, traversing two leaves per tree and reranking collected candidates
+- `sklearn` brute/KD/Ball tree probes over normalized relative signatures
+
+Result:
+
+| Method | Query Time | Notes |
+|---|---:|---|
+| Vectorized exact relative search | ~0.084 ms/query | Batched NumPy matrix multiply; fastest observed path |
+| RP forest prototype | ~4.92 ms/query | Scored ~2,714 candidates/query; Python traversal overhead dominates |
+| sklearn brute euclidean | ~1.47 ms/query | C-backed brute path |
+| sklearn KD-tree | ~9.07 ms/query | High-dimensional tree traversal loses |
+| sklearn BallTree | ~6.64 ms/query | Also slower than brute |
+
+The RP forest recovered reasonable candidate recall, but it was slower than exact vectorized search at 10k:
+
+| Method | Pool | Mean Recall of Raw Top-10 | All Top-10 Contained |
+|---|---:|---:|---:|
+| exact_relative | 100 | 0.9173 | 0.5630 |
+| exact_relative | 250 | 0.9660 | 0.7890 |
+| exact_relative | 500 | 0.9835 | 0.8890 |
+| rp_forest | 100 | 0.8893 | 0.4710 |
+| rp_forest | 250 | 0.9257 | 0.5870 |
+| rp_forest | 500 | 0.9365 | 0.6240 |
+
+Interpretation:
+
+For 10k documents, a tree is not needed. Exact vectorized relative search is already faster and more accurate. The B-tree-like structure is conceptually possible, but the useful production version should likely be a compiled ANN structure such as HNSW, IVF/PQ, or a custom vectorized bucket/projection index rather than a Python tree.
+
+Tree benchmark artifacts:
+
+- `scripts/07_signature_index_benchmark.py`
+- `experiments/tenk_minilm_candidate/tree_index/signature_index_benchmark.md`
+- `experiments/tenk_minilm_candidate/tree_index/signature_index_benchmark.csv`
+- `experiments/tenk_minilm_candidate/tree_index/signature_index_benchmark.png`
 
 ## Bottom Line
 
@@ -203,8 +281,11 @@ Concrete search design:
 
 Reports:
 
-- `larp_results.md`
-- `larp_results_general_sentence_models.md`
+- `reports/larp_results.md`
+- `reports/larp_results_code_models_candidate.md`
+- `reports/larp_results_general_sentence_candidate.md`
+- `reports/larp_results_general_sentence_models.md`
+- `reports/larp_results_large_minilm_candidate.md`
 
 Tables:
 

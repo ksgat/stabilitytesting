@@ -10,6 +10,7 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 
 import matplotlib
@@ -156,8 +157,17 @@ def fetch_hf_rows(language: str, offset: int, length: int) -> list[dict[str, obj
         }
     )
     url = f"{HF_ROWS_URL}?{query}"
-    with urllib.request.urlopen(url, timeout=120) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    for attempt in range(8):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as exc:
+            if exc.code != 429 or attempt == 7:
+                raise
+            delay = min(180, 20 * (attempt + 1))
+            print(f"HF rows rate limited for {language} offset {offset}; sleeping {delay}s")
+            time.sleep(delay)
     return [item["row"] for item in payload.get("rows", [])]
 
 
@@ -174,6 +184,14 @@ def fetch_corpus_from_hf(paths: dict[str, Path], n_docs: int, seed: int, max_cha
     corpus: list[dict[str, str]] = []
 
     for lang in LANGUAGE_ORDER:
+        lang_cache_path = paths["processed"] / f"hf_{HF_DATASET.replace('/', '_')}_{lang}_target{target_per_lang}_seed{seed}.jsonl"
+        if lang_cache_path.exists():
+            lang_rows = [json.loads(line) for line in lang_cache_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if len(lang_rows) >= target_per_lang:
+                print(f"Using cached HF rows: {lang} -> {len(lang_rows[:target_per_lang])} snippets")
+                corpus.extend(lang_rows[:target_per_lang])
+                continue
+
         lang_rows: list[dict[str, str]] = []
         offset = rng.randrange(0, 500)
         page = 100
@@ -203,6 +221,10 @@ def fetch_corpus_from_hf(paths: dict[str, Path], n_docs: int, seed: int, max_cha
             offset += page
             attempts += 1
         print(f"HF rows: {lang} -> {len(lang_rows)} snippets")
+        if lang_rows:
+            with lang_cache_path.open("w", encoding="utf-8") as fh:
+                for row in lang_rows:
+                    fh.write(json.dumps(row, ensure_ascii=True) + "\n")
         corpus.extend(lang_rows[:target_per_lang])
 
     rng.shuffle(corpus)
@@ -569,40 +591,73 @@ def experiment_candidate_recall(
     anchor_indices: np.ndarray,
     top_ks: list[int],
     pool_sizes: list[int],
+    sample_queries: int = 0,
+    seed: int = 7,
+    query_batch_size: int = 128,
 ) -> list[dict[str, object]]:
     rows = []
     for model_name, embeddings in embeddings_by_model.items():
         n = len(embeddings)
-        abs_dist = cosine_distance_matrix(embeddings)
+        query_indices = np.arange(n)
+        if sample_queries and sample_queries < n:
+            rng = np.random.default_rng(seed)
+            query_indices = np.sort(rng.choice(n, size=sample_queries, replace=False))
+
+        raw = l2_normalize(embeddings.astype(np.float32))
         rel_sigs = anchor_relative_signature(embeddings, anchor_indices)
-        rel_dist = cosine_distance_matrix(rel_sigs)
-        abs_order = np.argsort(abs_dist, axis=1)[:, 1:]
-        rel_order = np.argsort(rel_dist, axis=1)[:, 1:]
+        rel = l2_normalize(rel_sigs.astype(np.float32))
+
+        max_k = max(top_ks)
+        max_pool = max(pool_sizes)
+        buckets = {
+            (top_k, pool_size): {"recalls": [], "hit_all": [], "hit_any": []}
+            for top_k in top_ks
+            for pool_size in pool_sizes
+            if top_k < n and pool_size < n
+        }
+
+        for start in range(0, len(query_indices), query_batch_size):
+            batch_indices = query_indices[start : start + query_batch_size]
+            raw_scores = raw[batch_indices] @ raw.T
+            rel_scores = rel[batch_indices] @ rel.T
+            for row_offset, query_idx in enumerate(batch_indices):
+                raw_scores[row_offset, query_idx] = -np.inf
+                rel_scores[row_offset, query_idx] = -np.inf
+
+            raw_order = np.argsort(-raw_scores, axis=1)[:, :max_k]
+            rel_order = np.argsort(-rel_scores, axis=1)[:, :max_pool]
+
+            for row_offset in range(len(batch_indices)):
+                for top_k in top_ks:
+                    if top_k >= n:
+                        continue
+                    true_set = set(raw_order[row_offset, :top_k])
+                    for pool_size in pool_sizes:
+                        if pool_size >= n:
+                            continue
+                        pool = set(rel_order[row_offset, :pool_size])
+                        hits = len(true_set & pool)
+                        bucket = buckets[(top_k, pool_size)]
+                        bucket["recalls"].append(hits / top_k)
+                        bucket["hit_all"].append(hits == top_k)
+                        bucket["hit_any"].append(hits > 0)
 
         for top_k in top_ks:
             if top_k >= n:
                 continue
-            true_sets = [set(row[:top_k]) for row in abs_order]
             for pool_size in pool_sizes:
                 if pool_size >= n:
                     continue
-                recalls = []
-                hit_all = []
-                hit_any = []
-                for i in range(n):
-                    pool = set(rel_order[i, :pool_size])
-                    hits = len(true_sets[i] & pool)
-                    recalls.append(hits / top_k)
-                    hit_all.append(hits == top_k)
-                    hit_any.append(hits > 0)
+                bucket = buckets[(top_k, pool_size)]
                 rows.append(
                     {
                         "model": model_name,
                         "top_k": top_k,
                         "pool_size": pool_size,
-                        "mean_recall": float(np.mean(recalls)),
-                        "all_top_k_contained": float(np.mean(hit_all)),
-                        "any_hit": float(np.mean(hit_any)),
+                        "query_count": len(bucket["recalls"]),
+                        "mean_recall": float(np.mean(bucket["recalls"])),
+                        "all_top_k_contained": float(np.mean(bucket["hit_all"])),
+                        "any_hit": float(np.mean(bucket["hit_any"])),
                     }
                 )
     return rows
@@ -826,6 +881,11 @@ def parse_args():
     parser.add_argument("--allow-remote-code", action="store_true")
     parser.add_argument("--top-ks", nargs="*", type=int, default=[1, 5, 10])
     parser.add_argument("--candidate-pools", nargs="*", type=int, default=[10, 25, 50, 75, 100])
+    parser.add_argument("--sample-queries", type=int, default=0)
+    parser.add_argument("--skip-cross-model", action="store_true")
+    parser.add_argument("--skip-anchor-count", action="store_true")
+    parser.add_argument("--skip-perturbation", action="store_true")
+    parser.add_argument("--artifact-root", default=".")
     return parser.parse_args()
 
 
@@ -839,7 +899,11 @@ def main() -> None:
         args.models = DEFAULT_MODELS
 
     root = Path.cwd()
-    paths = ensure_dirs(root)
+    artifact_root = Path(args.artifact_root)
+    if not artifact_root.is_absolute():
+        artifact_root = root / artifact_root
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    paths = ensure_dirs(artifact_root)
     rng = np.random.default_rng(args.seed)
 
     corpus = load_corpus(
@@ -880,23 +944,31 @@ def main() -> None:
     if not embeddings:
         raise RuntimeError(f"No model embeddings completed. Failures: {failures}")
 
-    cross_rows, _ = experiment_cross_model(embeddings, anchor_indices, args.max_spearman_pairs, args.seed)
+    cross_rows = []
+    if not args.skip_cross_model:
+        cross_rows, _ = experiment_cross_model(embeddings, anchor_indices, args.max_spearman_pairs, args.seed)
     primary_model = next(iter(embeddings))
     counts = [c for c in [8, 16, 32, 64, 128, 256, 512] if c <= n_loaded // 2]
-    anchor_rows = experiment_anchor_counts(embeddings[primary_model], anchor_pool, counts)
+    anchor_rows = []
+    if not args.skip_anchor_count:
+        anchor_rows = experiment_anchor_counts(embeddings[primary_model], anchor_pool, counts)
     baseline_n = max(2, min(int(n_loaded * 0.5), n_loaded - 1))
-    perturb_rows = experiment_perturbation(
-        embeddings[primary_model],
-        baseline_n,
-        anchor_pool,
-        [0.10, 0.25, 0.50, 1.00],
-        min(anchor_count, baseline_n // 2),
-    )
+    perturb_rows = []
+    if not args.skip_perturbation:
+        perturb_rows = experiment_perturbation(
+            embeddings[primary_model],
+            baseline_n,
+            anchor_pool,
+            [0.10, 0.25, 0.50, 1.00],
+            min(anchor_count, baseline_n // 2),
+        )
     candidate_rows = experiment_candidate_recall(
         embeddings,
         anchor_indices,
         args.top_ks,
         args.candidate_pools,
+        args.sample_queries,
+        args.seed,
     )
 
     table_prefix = f"{args.run_name}_"
@@ -907,12 +979,14 @@ def main() -> None:
     write_csv(paths["tables"] / f"{table_prefix}candidate_recall.csv", candidate_rows)
     if cross_rows:
         plot_cross_model(cross_rows, paths["figures"] / f"{figure_prefix}cross_model_mrr.png")
-    plot_anchor_counts(anchor_rows, paths["figures"] / f"{figure_prefix}anchor_count_curve.png")
-    plot_perturbation(perturb_rows, paths["figures"] / f"{figure_prefix}corpus_perturbation.png")
+    if anchor_rows:
+        plot_anchor_counts(anchor_rows, paths["figures"] / f"{figure_prefix}anchor_count_curve.png")
+    if perturb_rows:
+        plot_perturbation(perturb_rows, paths["figures"] / f"{figure_prefix}corpus_perturbation.png")
     if candidate_rows:
         plot_candidate_recall(candidate_rows, paths["figures"] / f"{figure_prefix}candidate_recall.png")
     write_report(
-        root / f"larp_results_{args.run_name}.md",
+        artifact_root / f"larp_results_{args.run_name}.md",
         args,
         corpus,
         cross_rows,

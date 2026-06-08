@@ -1,1 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local/editor state
+.env
+.env.*
+.vscode/
+.idea/
+*.log
+
+# Downloaded papers and raw datasets
 /2209.15430v2.pdf
+/data/external/
+/data/processed/
+
+# Generated experiment artifacts
+/outputs/
+/experiments/*/data/
+/experiments/*/outputs/embeddings/
+
+# Keep experiment summaries, tables, and plots trackable if desired.
+!/experiments/*/outputs/
+!/experiments/*/outputs/tables/
+!/experiments/*/outputs/tables/*.csv
+!/experiments/*/outputs/figures/
+!/experiments/*/outputs/figures/*.png
+
+# Hugging Face / model caches if created locally
+.cache/
+huggingface/
+hf_cache/
