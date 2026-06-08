@@ -1,0 +1,28 @@
+seed: 13
+corpus_path: data/corpus.jsonl
+run_dir: runs/baseline
+n_docs: 5000
+batch_size: 16
+max_length: 512
+device: auto
+
+models:
+  - name: microsoft/codebert-base
+    pooling: mean
+  - name: microsoft/unixcoder-base
+    pooling: mean
+  - name: Salesforce/codet5p-110m-embedding
+    pooling: mean
+
+anchor:
+  count: 512
+  counts_for_sweep: [16, 32, 64, 128, 256, 512]
+  strategy: random
+
+metrics:
+  k: 10
+  spearman_sample_pairs: 200000
+
+incremental:
+  base_fraction: 0.8
+  insert_fractions: [0.05, 0.10, 0.20]
