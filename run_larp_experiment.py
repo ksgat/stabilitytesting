@@ -1,5 +1,6 @@
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -31,7 +32,16 @@ DEFAULT_MODELS = [
     "Salesforce/codet5-small",
     "microsoft/unixcoder-base",
 ]
+GENERAL_SENTENCE_MODELS = [
+    "sentence-transformers/all-MiniLM-L6-v2",
+    "sentence-transformers/all-MiniLM-L12-v2",
+    "sentence-transformers/paraphrase-MiniLM-L3-v2",
+    "sentence-transformers/paraphrase-albert-small-v2",
+    "intfloat/e5-small-v2",
+    "BAAI/bge-small-en-v1.5",
+]
 LANGUAGE_ORDER = ["go", "java", "javascript", "php", "python", "ruby"]
+TEXT_FIELD_CANDIDATES = ("text", "sentence", "code", "content", "docstring", "description")
 
 
 class CodeT5SmallTokenizer:
@@ -185,6 +195,7 @@ def fetch_corpus_from_hf(paths: dict[str, Path], n_docs: int, seed: int, max_cha
                         "repo": row.get("repo", ""),
                         "path": row.get("path", ""),
                         "code": code[:max_chars],
+                        "text": code[:max_chars],
                     }
                 )
                 if len(lang_rows) >= target_per_lang:
@@ -206,7 +217,87 @@ def fetch_corpus_from_hf(paths: dict[str, Path], n_docs: int, seed: int, max_cha
     return corpus
 
 
-def load_corpus(paths: dict[str, Path], n_docs: int, seed: int, max_chars: int) -> list[dict[str, str]]:
+def infer_text(row: dict[str, object], preferred_field: str | None = None) -> tuple[str, str | None]:
+    fields = [preferred_field] if preferred_field else []
+    fields.extend(field for field in TEXT_FIELD_CANDIDATES if field not in fields)
+    for field in fields:
+        value = row.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip(), field
+    return "", None
+
+
+def generated_id(row: dict[str, object], line_no: int, text: str) -> str:
+    value = row.get("id") or row.get("doc_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    digest = hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+    path = row.get("path")
+    if isinstance(path, str) and path.strip():
+        return f"{path.strip()}-{digest}"
+    return f"generated-{line_no}-{digest}"
+
+
+def load_jsonl_corpus(
+    corpus_path: Path,
+    n_docs: int,
+    seed: int,
+    max_chars: int,
+    min_chars: int,
+    text_field: str | None,
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen_text = set()
+
+    with corpus_path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line_no, line in enumerate(fh, 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            text, used_field = infer_text(row, text_field)
+            if len(text) < min_chars:
+                continue
+            text = text[:max_chars]
+            if text in seen_text:
+                continue
+            seen_text.add(text)
+
+            rows.append(
+                {
+                    "id": generated_id(row, line_no, text),
+                    "language": str(row.get("language") or row.get("lang") or row.get("domain") or "unknown"),
+                    "repo": str(row.get("repo") or ""),
+                    "path": str(row.get("path") or ""),
+                    "text": text,
+                    "text_field": used_field or "",
+                }
+            )
+
+    rng = random.Random(seed)
+    rng.shuffle(rows)
+    rows = rows[:n_docs]
+    if len(rows) < n_docs:
+        print(f"warning: requested {n_docs} rows from {corpus_path}, loaded {len(rows)}")
+    print(f"Loaded external corpus: {len(rows)} rows from {corpus_path}")
+    return rows
+
+
+def load_corpus(
+    paths: dict[str, Path],
+    n_docs: int,
+    seed: int,
+    max_chars: int,
+    min_chars: int = 80,
+    corpus_path: Path | None = None,
+    text_field: str | None = None,
+) -> list[dict[str, str]]:
+    if corpus_path:
+        return load_jsonl_corpus(corpus_path, n_docs, seed, max_chars, min_chars, text_field)
+
     zip_path = paths["external"] / "codexglue_code_to_text_dataset.zip"
     extract_dir = paths["external"] / "codexglue_code_to_text"
     download_file(DATASET_URL, zip_path)
@@ -237,6 +328,7 @@ def load_corpus(paths: dict[str, Path], n_docs: int, seed: int, max_chars: int) 
                         "repo": row.get("repo", ""),
                         "path": row.get("path", ""),
                         "code": code[:max_chars],
+                        "text": code[:max_chars],
                     }
                 )
 
@@ -402,6 +494,8 @@ def embed_corpus(
     all_embeddings = []
     for start in range(0, len(texts), batch_size):
         batch_texts = texts[start : start + batch_size]
+        if model_name.startswith("intfloat/e5-"):
+            batch_texts = [f"passage: {text}" for text in batch_texts]
         emb = forward_embeddings(model, tokenizer, batch_texts, device, max_tokens)
         all_embeddings.append(emb.numpy())
         print(f"  {model_name}: {min(start + batch_size, len(texts))}/{len(texts)}")
@@ -521,13 +615,14 @@ def plot_cross_model(rows: list[dict[str, object]], path: Path) -> None:
     labels = [f"{r['model_a'].split('/')[-1]}\nvs\n{r['model_b'].split('/')[-1]}" for r in rows]
     x = np.arange(len(rows))
     width = 0.36
-    fig, ax = plt.subplots(figsize=(11, 6))
+    fig_width = max(11, len(rows) * 1.15)
+    fig, ax = plt.subplots(figsize=(fig_width, 6.8))
     ax.bar(x - width / 2, [r["absolute_mrr"] for r in rows], width, label="Absolute", color="#4C78A8")
     ax.bar(x + width / 2, [r["relative_mrr"] for r in rows], width, label="Anchor-relative", color="#F58518")
     ax.set_ylabel("MRR@10 preservation")
     ax.set_ylim(0, 1)
     ax.set_title("Cross-model nearest-neighbor preservation")
-    ax.set_xticks(x, labels)
+    ax.set_xticks(x, labels, rotation=35, ha="right")
     ax.legend(frameon=False)
     ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
@@ -567,11 +662,13 @@ def plot_perturbation(rows: list[dict[str, object]], path: Path) -> None:
 def write_report(path: Path, args, corpus, cross_rows, anchor_rows, perturb_rows, models_completed) -> None:
     by_lang = {}
     for row in corpus:
-        by_lang[row["language"]] = by_lang.get(row["language"], 0) + 1
+        lang = row.get("language") or "unknown"
+        by_lang[lang] = by_lang.get(lang, 0) + 1
 
     lines = [
         "# LARP Experiment Results",
         "",
+        f"- Run: {args.run_name}",
         f"- Docs sampled: {len(corpus)}",
         f"- Language mix: {by_lang}",
         f"- Models completed: {models_completed}",
@@ -632,10 +729,15 @@ def parse_args():
     parser.add_argument("--n-docs", type=int, default=600)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--max-chars", type=int, default=4000)
+    parser.add_argument("--min-chars", type=int, default=80)
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--anchor-count", type=int, default=128)
     parser.add_argument("--models", nargs="*", default=DEFAULT_MODELS)
+    parser.add_argument("--model-suite", choices=["code", "general-sentence"], default=None)
+    parser.add_argument("--run-name", default="code_models")
+    parser.add_argument("--corpus-path", type=Path, default=None)
+    parser.add_argument("--text-field", default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--max-spearman-pairs", type=int, default=200_000)
     parser.add_argument("--allow-remote-code", action="store_true")
@@ -644,14 +746,33 @@ def parse_args():
 
 def main() -> None:
     args = parse_args()
+    if args.model_suite == "general-sentence":
+        args.models = GENERAL_SENTENCE_MODELS
+        if args.run_name == "code_models":
+            args.run_name = "general_sentence_models"
+    elif args.model_suite == "code" and args.run_name == "code_models":
+        args.models = DEFAULT_MODELS
+
     root = Path.cwd()
     paths = ensure_dirs(root)
     rng = np.random.default_rng(args.seed)
 
-    corpus = load_corpus(paths, args.n_docs, args.seed, args.max_chars)
-    texts = [row["code"] for row in corpus]
-    anchor_count = min(args.anchor_count, max(4, args.n_docs // 2))
-    anchor_pool = rng.permutation(args.n_docs)
+    corpus = load_corpus(
+        paths,
+        args.n_docs,
+        args.seed,
+        args.max_chars,
+        args.min_chars,
+        args.corpus_path,
+        args.text_field,
+    )
+    texts = [row.get("text") or row.get("code") or "" for row in corpus]
+    if len(texts) < 2:
+        raise RuntimeError("Need at least two usable corpus rows to run stability tests.")
+
+    n_loaded = len(texts)
+    anchor_count = min(args.anchor_count, max(4, n_loaded // 2))
+    anchor_pool = rng.permutation(n_loaded)
     anchor_indices = anchor_pool[:anchor_count]
 
     embeddings = {}
@@ -676,9 +797,9 @@ def main() -> None:
 
     cross_rows, _ = experiment_cross_model(embeddings, anchor_indices, args.max_spearman_pairs, args.seed)
     primary_model = next(iter(embeddings))
-    counts = [c for c in [8, 16, 32, 64, 128, 256, 512] if c <= args.n_docs // 2]
+    counts = [c for c in [8, 16, 32, 64, 128, 256, 512] if c <= n_loaded // 2]
     anchor_rows = experiment_anchor_counts(embeddings[primary_model], anchor_pool, counts)
-    baseline_n = max(50, min(int(args.n_docs * 0.5), args.n_docs - 1))
+    baseline_n = max(2, min(int(n_loaded * 0.5), n_loaded - 1))
     perturb_rows = experiment_perturbation(
         embeddings[primary_model],
         baseline_n,
@@ -687,15 +808,17 @@ def main() -> None:
         min(anchor_count, baseline_n // 2),
     )
 
-    write_csv(paths["tables"] / "cross_model_preservation.csv", cross_rows)
-    write_csv(paths["tables"] / "anchor_count_curve.csv", anchor_rows)
-    write_csv(paths["tables"] / "corpus_perturbation.csv", perturb_rows)
+    table_prefix = f"{args.run_name}_"
+    figure_prefix = f"{args.run_name}_"
+    write_csv(paths["tables"] / f"{table_prefix}cross_model_preservation.csv", cross_rows)
+    write_csv(paths["tables"] / f"{table_prefix}anchor_count_curve.csv", anchor_rows)
+    write_csv(paths["tables"] / f"{table_prefix}corpus_perturbation.csv", perturb_rows)
     if cross_rows:
-        plot_cross_model(cross_rows, paths["figures"] / "cross_model_mrr.png")
-    plot_anchor_counts(anchor_rows, paths["figures"] / "anchor_count_curve.png")
-    plot_perturbation(perturb_rows, paths["figures"] / "corpus_perturbation.png")
+        plot_cross_model(cross_rows, paths["figures"] / f"{figure_prefix}cross_model_mrr.png")
+    plot_anchor_counts(anchor_rows, paths["figures"] / f"{figure_prefix}anchor_count_curve.png")
+    plot_perturbation(perturb_rows, paths["figures"] / f"{figure_prefix}corpus_perturbation.png")
     write_report(
-        root / "larp_results.md",
+        root / f"larp_results_{args.run_name}.md",
         args,
         corpus,
         cross_rows,

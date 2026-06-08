@@ -25,9 +25,10 @@ The load-bearing empirical question is not just "do signatures drift?" For deter
 
 ## Data contract
 
-The downloader agent should produce:
+The downloader agent should produce one of these:
 
 ```text
+data/processed/sentence_corpus.jsonl
 data/corpus.jsonl
 ```
 
@@ -36,6 +37,8 @@ Each row:
 ```json
 {"id":"unique-stable-id","text":"code or document text","path":"optional/source/path.py","lang":"optional-language","repo":"optional-repo"}
 ```
+
+The scripts also accept rows with `sentence` or `code` instead of `text`. If `id` is missing, they generate a stable-enough id from the row number and text hash.
 
 Rules:
 
@@ -62,7 +65,7 @@ scripts/06_report.py
 ## Run order
 
 ```bash
-python scripts/00_validate_corpus.py --corpus data/corpus.jsonl
+python scripts/00_validate_corpus.py --corpus data/processed/sentence_corpus.jsonl --min-chars 10
 python scripts/01_embed_models.py --config config.yaml
 python scripts/02_make_signatures.py --config config.yaml
 python scripts/03_cross_model_preservation.py --config config.yaml

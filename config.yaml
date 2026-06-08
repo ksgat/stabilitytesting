@@ -1,5 +1,6 @@
 seed: 13
-corpus_path: data/corpus.jsonl
+corpus_path: data/processed/sentence_corpus.jsonl
+text_field: null
 run_dir: runs/baseline
 n_docs: 5000
 batch_size: 16

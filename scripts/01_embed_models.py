@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -9,28 +10,53 @@ from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 
+DEFAULT_TEXT_FIELDS = ("text", "sentence", "code", "content", "docstring", "description")
+
+
 def slug(name):
     return name.replace("/", "__")
 
 
-def load_corpus(path, n_docs):
+def extract_text(row, preferred_field=None):
+    fields = [preferred_field] if preferred_field else []
+    fields.extend(field for field in DEFAULT_TEXT_FIELDS if field not in fields)
+    for field in fields:
+        value = row.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip(), field
+    return "", None
+
+
+def stable_id(row, line_no, text):
+    value = row.get("id") or row.get("doc_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    digest = hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+    path = row.get("path")
+    if isinstance(path, str) and path.strip():
+        return f"{path.strip()}-{digest}"
+    return f"generated-{line_no}-{digest}"
+
+
+def load_corpus(path, n_docs, text_field=None):
     rows = []
     seen_text = set()
     with Path(path).open("r", encoding="utf-8") as handle:
-        for line in handle:
+        for line_no, line in enumerate(handle, 1):
             if not line.strip():
                 continue
             row = json.loads(line)
-            text = (row.get("text") or "").strip()
+            text, field_used = extract_text(row, text_field)
             if not text or text in seen_text:
                 continue
             seen_text.add(text)
             rows.append({
-                "id": row["id"],
+                "id": stable_id(row, line_no, text),
                 "text": text,
                 "path": row.get("path"),
-                "lang": row.get("lang"),
+                "lang": row.get("lang") or row.get("language") or row.get("domain"),
                 "repo": row.get("repo"),
+                "text_field": field_used,
             })
             if len(rows) >= n_docs:
                 break
@@ -92,7 +118,7 @@ def main():
     embed_dir = run_dir / "embeddings"
     embed_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = load_corpus(config["corpus_path"], config["n_docs"])
+    rows = load_corpus(config["corpus_path"], config["n_docs"], config.get("text_field"))
     metadata_path = run_dir / "corpus_metadata.json"
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
