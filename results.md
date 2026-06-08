@@ -18,6 +18,8 @@ Anchor-relative signatures preserve broad geometry better than raw absolute spac
 
 In both model suites, relative signatures lost MRR@10 against absolute embeddings for every tested model pair.
 
+However, a later candidate-generation test is much more favorable to the index idea: relative signatures can retrieve a candidate pool that contains most or nearly all of the raw-embedding top-k before reranking.
+
 ## Code-Oriented Model Suite
 
 Models:
@@ -119,6 +121,54 @@ Interpretation:
 
 The anchor-count curves are encouraging inside a single model: 32 anchors recovered high MRR against raw-space retrieval in both suites. The issue is not whether anchors can summarize one model's space. The issue is whether those summaries transfer local neighborhoods across models.
 
+## Candidate Recall For Indexing
+
+This is the most relevant experiment for a concrete incremental index.
+
+Question:
+
+Can a relative-signature index retrieve a candidate pool that contains the raw embedding model's true top-k neighbors, even if the relative-signature ordering itself is imperfect?
+
+For a 1,000-document run with `sentence-transformers/all-MiniLM-L6-v2`, 128 fixed anchors, and raw top-10 as the target:
+
+| Candidate Pool | Mean Recall of Raw Top-10 | All Top-10 Contained | Any Hit |
+|---:|---:|---:|---:|
+| 25 | 0.8061 | 0.3010 | 1.0000 |
+| 50 | 0.8958 | 0.5040 | 1.0000 |
+| 100 | 0.9543 | 0.7270 | 1.0000 |
+| 250 | 0.9920 | 0.9360 | 1.0000 |
+| 500 | 0.9995 | 0.9960 | 1.0000 |
+
+For raw top-5:
+
+| Candidate Pool | Mean Recall of Raw Top-5 | All Top-5 Contained | Any Hit |
+|---:|---:|---:|---:|
+| 25 | 0.8880 | 0.6500 | 0.9990 |
+| 50 | 0.9418 | 0.7930 | 1.0000 |
+| 100 | 0.9764 | 0.9050 | 1.0000 |
+| 250 | 0.9970 | 0.9850 | 1.0000 |
+| 500 | 0.9998 | 0.9990 | 1.0000 |
+
+For raw top-1:
+
+| Candidate Pool | Recall of Raw Top-1 |
+|---:|---:|
+| 25 | 0.9600 |
+| 50 | 0.9720 |
+| 100 | 0.9890 |
+| 250 | 0.9980 |
+| 500 | 1.0000 |
+
+Interpretation:
+
+This is strong evidence for using relative signatures as a first-stage candidate-generation index. The relative index does not need to return the final exact top-k. It needs to return a small candidate pool that almost always contains the true raw-embedding neighbors, after which raw cosine similarity can rerank the pool.
+
+Artifacts:
+
+- `larp_results_large_minilm_candidate.md`
+- `outputs/tables/large_minilm_candidate_candidate_recall.csv`
+- `outputs/figures/large_minilm_candidate_candidate_recall.png`
+
 ## Bottom Line
 
 The hypothesis is partly alive, but not in the strongest form.
@@ -128,6 +178,7 @@ What looks promising:
 - Relative signatures consistently improve broad pairwise geometry preservation for general sentence models.
 - Small anchor counts can approximate same-model retrieval surprisingly well.
 - Fixed-anchor signatures are stable under corpus additions.
+- Relative-signature candidate pools recover raw-embedding top-k well enough to support a two-stage index design.
 
 What looks bad:
 
@@ -137,7 +188,16 @@ What looks bad:
 
 Practical implication:
 
-Relative anchor signatures may be useful as a coarse, stable routing or clustering layer for an incremental semantic index. They do not yet look strong enough to replace exact embedding-space nearest-neighbor search for final retrieval.
+Relative anchor signatures look useful as a coarse, stable routing layer for an incremental semantic index. They do not look strong enough to replace exact embedding-space nearest-neighbor search for final retrieval, but they may be strong enough to make final retrieval cheap by narrowing the candidate set first.
+
+Concrete search design:
+
+1. Embed fixed anchors once.
+2. For each document, store raw embedding and relative signature to the anchor set.
+3. Build an ANN/HNSW index over relative signatures.
+4. For each query, compute its relative signature and retrieve a candidate pool.
+5. Rerank that pool with raw embedding cosine similarity.
+6. Insert new documents by embedding only the new document and computing its relations to fixed anchors.
 
 ## Artifacts
 
@@ -154,6 +214,9 @@ Tables:
 - `outputs/tables/general_sentence_models_cross_model_preservation.csv`
 - `outputs/tables/general_sentence_models_anchor_count_curve.csv`
 - `outputs/tables/general_sentence_models_corpus_perturbation.csv`
+- `outputs/tables/code_models_candidate_candidate_recall.csv`
+- `outputs/tables/general_sentence_candidate_candidate_recall.csv`
+- `outputs/tables/large_minilm_candidate_candidate_recall.csv`
 
 Runner:
 
