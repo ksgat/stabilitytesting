@@ -27,6 +27,9 @@ env/
 /outputs/
 /experiments/*/data/
 /experiments/*/outputs/embeddings/
+/experiments/*/anchor_ablation/*.npy
+/experiments/*/anchor_ablation_tight/*.npy
+/experiments/*/larp_index_demo/saved_index/*.npy
 
 # Keep experiment summaries, tables, and plots trackable if desired.
 !/experiments/*/outputs/

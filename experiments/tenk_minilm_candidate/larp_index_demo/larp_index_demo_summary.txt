@@ -1,0 +1,10 @@
+docs_after_insert: 10000
+base_docs: 9900
+insert_docs: 100
+anchor_count: 256
+build_seconds: 0.5519158000824973
+insert_seconds_total: 0.023561500012874603
+insert_ms_per_doc: 0.23561500012874603
+save_seconds: 0.05570399994030595
+load_seconds: 0.1728446000488475
+rerank_ms_per_query_pool_max: 2.281502499943599

@@ -247,6 +247,113 @@ Tree benchmark artifacts:
 - `experiments/tenk_minilm_candidate/tree_index/signature_index_benchmark.csv`
 - `experiments/tenk_minilm_candidate/tree_index/signature_index_benchmark.png`
 
+## Anchor Strategy Ablation
+
+A broad 10k ablation tested anchor strategy and signature transform combinations using the same `all-MiniLM-L6-v2` embeddings, 256 anchors, 1,000 sampled queries, and raw top-10 as the target.
+
+Tested anchor families:
+
+- random
+- language-stratified random
+- farthest-point from random seed
+- farthest-point from corpus centroid
+- PCA extremes
+- kmeans medoids
+- kmeans boundary points
+- language-balanced kmeans medoids
+- dense, sparse, and mixed density anchors
+- multi-scale anchors
+- hard-negative anchors
+
+Tested signature transforms:
+
+- raw cosine-to-anchor
+- column-centered
+- global zscore
+- row zscore
+- rank
+- top-32 and top-64 sparse
+- binary top-32
+- softmax temperatures `0.05` and `0.1`
+- centered sign bits
+
+Best broad-grid results at pool 250:
+
+| Anchor Strategy | Transform | Mean Recall of Raw Top-10 | All Top-10 Contained |
+|---|---|---:|---:|
+| farthest_random | row_zscore | 0.9879 | 0.9030 |
+| farthest_random | raw | 0.9839 | 0.8810 |
+| kmeans_boundary | row_zscore | 0.9817 | 0.8730 |
+| farthest_centroid | row_zscore | 0.9804 | 0.8610 |
+| multi_scale | row_zscore | 0.9797 | 0.8560 |
+| density_sparse | row_zscore | 0.9790 | 0.8480 |
+
+Focused tight-pool results:
+
+| Pool | Best Strategy | Best Transform | Mean Recall of Raw Top-10 | All Top-10 Contained |
+|---:|---|---|---:|---:|
+| 25 | farthest_random | row_zscore | 0.8234 | 0.3170 |
+| 50 | farthest_random | row_zscore | 0.9065 | 0.5320 |
+| 100 | farthest_random | row_zscore | 0.9583 | 0.7260 |
+| 250 | farthest_random | row_zscore | 0.9850 | 0.8890 |
+
+Interpretation:
+
+The strongest practical fix so far is not kmeans-medoid. It is diversity-heavy anchor coverage plus row-wise signature normalization. Dense anchors performed poorly, while sparse/outlier/boundary anchors performed well. This suggests the relative index benefits from anchors that span tails and decision boundaries rather than anchors that summarize the densest regions.
+
+Anchor ablation artifacts:
+
+- `scripts/08_anchor_ablation.py`
+- `experiments/tenk_minilm_candidate/anchor_ablation/anchor_ablation.md`
+- `experiments/tenk_minilm_candidate/anchor_ablation/anchor_ablation.csv`
+- `experiments/tenk_minilm_candidate/anchor_ablation_tight/anchor_ablation.md`
+- `experiments/tenk_minilm_candidate/anchor_ablation_tight/anchor_ablation.csv`
+
+## Concrete LARP Index Demo
+
+A minimal `LARPIndex` implementation now exists. It uses:
+
+- farthest-point anchors
+- row-zscored relative signatures
+- exact vectorized relative candidate search
+- raw embedding cosine rerank
+- batch insertion
+- save/load
+
+Demo setup:
+
+- 9,900 base documents
+- 100 held-out documents inserted after build
+- 10,000 total documents after insert
+- 256 anchors
+- 1,000 sampled queries
+
+Measured result:
+
+| Metric | Value |
+|---|---:|
+| Build time | 0.5519 s |
+| Batch insert time | 0.2356 ms/doc |
+| Save time | 0.0557 s |
+| Load time | 0.1728 s |
+| Full search + raw rerank at pool 500 | 2.2815 ms/query |
+
+Candidate recall after insert:
+
+| Pool | Mean Recall of Raw Top-10 | All Top-10 Contained |
+|---:|---:|---:|
+| 50 | 0.9053 | 0.5260 |
+| 100 | 0.9554 | 0.7200 |
+| 250 | 0.9850 | 0.8830 |
+| 500 | 0.9947 | 0.9520 |
+
+Index demo artifacts:
+
+- `larp_index.py`
+- `scripts/09_larp_index_demo.py`
+- `experiments/tenk_minilm_candidate/larp_index_demo/larp_index_demo.md`
+- `experiments/tenk_minilm_candidate/larp_index_demo/larp_index_demo_metrics.csv`
+
 ## Bottom Line
 
 The hypothesis is partly alive, but not in the strongest form.

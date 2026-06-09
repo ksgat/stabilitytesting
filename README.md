@@ -116,6 +116,28 @@ python .\run_larp_experiment.py `
 python .\scripts\07_signature_index_benchmark.py
 ```
 
+10k anchor/signature ablation:
+
+```powershell
+python .\scripts\08_anchor_ablation.py
+```
+
+Focused tight-pool ablation for the strongest strategies:
+
+```powershell
+python .\scripts\08_anchor_ablation.py `
+  --out-dir experiments\tenk_minilm_candidate\anchor_ablation_tight `
+  --strategies farthest_random kmeans_boundary density_sparse multi_scale random `
+  --transforms row_zscore raw rank `
+  --pools 25 50 75 100 250
+```
+
+End-to-end LARP index demo:
+
+```powershell
+python .\scripts\09_larp_index_demo.py
+```
+
 ## Current Key Result
 
 On the 10k MiniLM run with 256 fixed anchors and 1,000 sampled queries, relative-signature candidate pools recovered the raw embedding top-10 at:
@@ -136,6 +158,25 @@ At 10k documents, exact vectorized search over relative signatures was faster th
 | Random-projection forest prototype | ~4.92 ms/query |
 
 So for 10k, brute vectorized relative search is already sufficient. At larger scale, use a compiled ANN index such as HNSW/FAISS/ScaNN rather than a Python object tree.
+
+The best anchor/signature ablation so far is `farthest_random + row_zscore`:
+
+| Candidate Pool | Mean Recall of Raw Top-10 |
+|---:|---:|
+| 25 | 0.8234 |
+| 50 | 0.9065 |
+| 100 | 0.9583 |
+| 250 | 0.9850 |
+
+The concrete `LARPIndex` demo builds on 9,900 docs, inserts 100 held-out docs, saves/loads the index, and searches 1,000 sampled queries:
+
+| Metric | Value |
+|---|---:|
+| Build time | 0.5519 s |
+| Batch insert time | 0.2356 ms/doc |
+| Full search + raw rerank, pool 500 | 2.2815 ms/query |
+| Candidate recall, pool 100 | 0.9554 |
+| Candidate recall, pool 250 | 0.9850 |
 
 ## Cleanup Note
 
