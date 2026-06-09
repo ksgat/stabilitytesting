@@ -1,0 +1,13 @@
+doc_count,method,pool_size,mean_recall,all_top_k_contained,build_seconds,prep_seconds,ms_per_query,vector_dim,vector_mb,notes
+100000,raw_exact,10,1.0,1.0,0.0,0.0,1.4688628000003519,384,153.6,brute-force exact raw cosine
+100000,raw_exact,25,1.0,1.0,0.0,0.0,1.4688628000003519,384,153.6,brute-force exact raw cosine
+100000,raw_hnsw,10,0.9977999999999999,0.984,29.43961660000059,0.0,0.3653937999915797,384,153.6,HNSW over raw embeddings
+100000,raw_hnsw,25,0.9977999999999999,0.984,29.43961660000059,0.0,0.3653937999915797,384,153.6,HNSW over raw embeddings
+100000,ridge_relation_hnsw,10,0.955,0.594,23.584141300001647,22.30290640000021,0.196020999996108,384,153.6,HNSW over ridge-bilinear projected relation vectors
+100000,ridge_relation_hnsw,25,0.997,0.974,23.584141300001647,22.30290640000021,0.196020999996108,384,153.6,HNSW over ridge-bilinear projected relation vectors
+200000,raw_exact,10,1.0,1.0,0.0,0.0,2.857841200006078,384,307.2,brute-force exact raw cosine
+200000,raw_exact,25,1.0,1.0,0.0,0.0,2.857841200006078,384,307.2,brute-force exact raw cosine
+200000,raw_hnsw,10,0.9924,0.956,56.1349818000017,0.0,0.2236409999895841,384,307.2,HNSW over raw embeddings
+200000,raw_hnsw,25,0.9924,0.956,56.1349818000017,0.0,0.2236409999895841,384,307.2,HNSW over raw embeddings
+200000,ridge_relation_hnsw,10,0.9584000000000001,0.626,57.09901049999462,28.50761340000463,0.22637659999600146,384,307.2,HNSW over ridge-bilinear projected relation vectors
+200000,ridge_relation_hnsw,25,0.994,0.954,57.09901049999462,28.50761340000463,0.22637659999600146,384,307.2,HNSW over ridge-bilinear projected relation vectors

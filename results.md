@@ -354,6 +354,407 @@ Index demo artifacts:
 - `experiments/tenk_minilm_candidate/larp_index_demo/larp_index_demo.md`
 - `experiments/tenk_minilm_candidate/larp_index_demo/larp_index_demo_metrics.csv`
 
+## Multi-Model Robustness Check
+
+I reran the current best candidate-generation test over a fresh six-model, 3k-document embedding sweep. The test uses each model independently:
+
+1. Normalize raw embeddings.
+2. Select 256 fixed farthest-point anchors.
+3. Convert each document to anchor-relative cosine signatures.
+4. Apply per-document row z-score normalization.
+5. Retrieve candidates by relative-signature cosine similarity.
+6. Measure whether each model's raw embedding top-10 neighbors appear in the candidate pool.
+
+This does not test direct replacement of raw embedding search. It tests whether the relative signature is a stable candidate generator across models.
+
+Best setting: `farthest_random + row_zscore`, 1,000 sampled queries per model.
+
+| Model | Dim | Pool 50 | Pool 100 | Pool 250 | Pool 500 | Pool 1000 |
+|---|---:|---:|---:|---:|---:|---:|
+| BAAI/bge-small-en-v1.5 | 384 | 0.8370 | 0.9201 | 0.9742 | 0.9923 | 0.9991 |
+| intfloat/e5-small-v2 | 384 | 0.8486 | 0.9349 | 0.9857 | 0.9974 | 0.9996 |
+| sentence-transformers/all-MiniLM-L12-v2 | 384 | 0.8729 | 0.9355 | 0.9824 | 0.9962 | 0.9998 |
+| sentence-transformers/all-MiniLM-L6-v2 | 384 | 0.9015 | 0.9550 | 0.9889 | 0.9983 | 0.9999 |
+| sentence-transformers/paraphrase-MiniLM-L3-v2 | 384 | 0.8962 | 0.9596 | 0.9935 | 0.9993 | 1.0000 |
+| sentence-transformers/paraphrase-albert-small-v2 | 768 | 0.6856 | 0.7908 | 0.9008 | 0.9625 | 0.9921 |
+
+Strategy mean recall at pool 250:
+
+| Strategy | Mean | Min | Max |
+|---|---:|---:|---:|
+| farthest_row_zscore | 0.9709 | 0.9008 | 0.9935 |
+| farthest_raw | 0.9656 | 0.8753 | 0.9887 |
+| random_row_zscore | 0.9599 | 0.8708 | 0.9851 |
+| random_raw | 0.9478 | 0.8414 | 0.9810 |
+
+Finding:
+
+The result is probably not a single MiniLM fluke: MiniLM variants, E5, and BGE all land near perfect recall by pool 250-500. It is not universal yet: ALBERT is materially weaker and needs pool 500-1000 to reach the same quality band. That suggests model-specific calibration is still required.
+
+Artifacts:
+
+- `scripts/10_model_robustness.py`
+- `experiments/robustness_3k_general_rerun/larp_results_robustness_3k_general_rerun.md`
+- `experiments/robustness_3k_general_rerun/model_robustness/model_robustness.md`
+- `experiments/robustness_3k_general_rerun/model_robustness/model_robustness.csv`
+- `experiments/robustness_3k_general_rerun/model_robustness/model_robustness_curves.png`
+
+## Learned Anchor Selection
+
+I tested whether anchor selection can be trained as a separate lightweight model. This is the direct follow-up to the question: can an optimized relation coordinate system fix the gap between relative signatures and top-k search?
+
+Setup:
+
+1. Use the fresh six-model, 3k-document embedding sweep.
+2. Treat the first 2,000 documents as the base/old corpus.
+3. Build a 512-anchor candidate bank from base documents using farthest-point selection.
+4. Train one positive weight per candidate anchor with a contrastive hard-negative loss using only base-document positives and negatives.
+5. Keep the top 256 weighted anchors as `learned_top256`.
+6. Evaluate on 800 held-out queries from the final 1,000 documents.
+
+This is a stronger incremental test than the earlier robustness table because the learned selector only sees base-document anchor candidates and is evaluated on later/new-document queries.
+
+Pool-250 held-out recall:
+
+| Model | Farthest | Learned Top-256 | Delta | Weighted Bank |
+|---|---:|---:|---:|---:|
+| BAAI/bge-small-en-v1.5 | 0.9714 | 0.9891 | +0.0178 | 0.9915 |
+| intfloat/e5-small-v2 | 0.9812 | 0.9926 | +0.0114 | 0.9920 |
+| sentence-transformers/all-MiniLM-L12-v2 | 0.9725 | 0.9945 | +0.0220 | 0.9943 |
+| sentence-transformers/all-MiniLM-L6-v2 | 0.9878 | 0.9959 | +0.0081 | 0.9954 |
+| sentence-transformers/paraphrase-MiniLM-L3-v2 | 0.9924 | 0.9991 | +0.0067 | 0.9980 |
+| sentence-transformers/paraphrase-albert-small-v2 | 0.8903 | 0.9699 | +0.0796 | 0.9906 |
+
+Strategy means across the six models:
+
+| Strategy | Pool 10 | Pool 25 | Pool 50 | Pool 100 | Pool 250 |
+|---|---:|---:|---:|---:|---:|
+| random_row_zscore | 0.4821 | 0.6803 | 0.7960 | 0.8809 | 0.9517 |
+| farthest_row_zscore | 0.5080 | 0.7103 | 0.8260 | 0.9051 | 0.9659 |
+| learned_top256 | 0.5511 | 0.7753 | 0.8880 | 0.9544 | 0.9902 |
+| learned_weighted_bank | 0.5426 | 0.7692 | 0.8906 | 0.9592 | 0.9936 |
+
+Finding:
+
+Training anchor selection materially improves LARP. It fixes much of the ALBERT weakness and improves every tested model at pool 250, even under the stricter base-only training split. The best practical interpretation is still candidate generation: learned anchors make pool 100-250 very strong. They do not make relation-only top-10 a full replacement for reranking; pool 10 mean recall is only 0.5511.
+
+Artifacts:
+
+- `scripts/11_learned_anchor_selection.py`
+- `experiments/learned_anchor_selection/learned_anchor_selection.md`
+- `experiments/learned_anchor_selection/learned_anchor_selection.csv`
+- `experiments/learned_anchor_selection/learned_anchor_selection_pool250.png`
+
+Seed generalization:
+
+I reran learned anchor selection for seeds 7, 17, and 29 and aggregated pool-250 recall. The learned selector stayed ahead of farthest anchors on every model.
+
+| Strategy | Mean | Std | Min | Max |
+|---|---:|---:|---:|---:|
+| random_row_zscore | 0.9541 | 0.0428 | 0.8574 | 0.9889 |
+| farthest_row_zscore | 0.9673 | 0.0353 | 0.8857 | 0.9940 |
+| learned_top256 | 0.9901 | 0.0091 | 0.9698 | 0.9991 |
+| learned_weighted_bank | 0.9935 | 0.0035 | 0.9845 | 0.9980 |
+
+Artifacts:
+
+- `scripts/13_learned_anchor_seed_report.py`
+- `experiments/learned_anchor_seed_report/learned_anchor_seed_report.md`
+
+## LARP-HNSW System Benchmark
+
+I built the production-shaped benchmark that compares raw-vector HNSW to LARP-HNSW under incremental inserts.
+
+Setup:
+
+1. Use 10k MiniLM embeddings from the CodeXGLUE corpus.
+2. Build the index on the first 8,000 documents.
+3. Insert 500, 500, then 1,000 new documents.
+4. Evaluate 300 sampled corpus queries at each stage.
+5. Use exact raw cosine top-10 as the retrieval target.
+6. Compare raw HNSW, LARP-HNSW with raw rerank, relation-only LARP, and a two-generation LARP search facade.
+
+Final 10k stage:
+
+| Method | Pool | Recall | All Top-10 | ms/query | Label Precision |
+|---|---:|---:|---:|---:|---:|
+| raw_hnsw | 10 | 1.0000 | 1.0000 | 1.195 | 0.8090 |
+| larp_hnsw_rerank | 100 | 0.9513 | 0.7267 | 1.735 | 0.8183 |
+| larp_hnsw_rerank | 250 | 0.9850 | 0.8933 | 2.466 | 0.8133 |
+| larp_hnsw_rerank | 500 | 0.9940 | 0.9500 | 4.077 | 0.8110 |
+| larp_hnsw_relation_only | 10 | 0.6383 | 0.0067 | 1.340 | 0.8243 |
+| multi_generation_larp | 500 | 0.9963 | 0.9667 | 6.092 | 0.7963 |
+
+Drift diagnostics:
+
+| Stage | Top-Anchor Sim | Entropy | Anchor Gini |
+|---|---:|---:|---:|
+| build | 0.7682 | 5.5439 | 0.5189 |
+| insert batch 1 | 0.7553 | 5.5439 | 0.6383 |
+| insert batch 2 | 0.7570 | 5.5439 | 0.6211 |
+| insert batch 3 | 0.7588 | 5.5439 | 0.5714 |
+
+Compression estimate at 10k:
+
+| Representation | MB |
+|---|---:|
+| raw float32 | 15.360 |
+| signature float32 | 10.240 |
+| signature float16 | 5.120 |
+| signature int8 | 2.560 |
+
+Finding:
+
+Raw HNSW is the stronger final search backend at 10k in this implementation. LARP-HNSW reaches high recall as a routing layer, but it is slower once the Python raw-rerank pool is included. Relation-only top-k is still not close enough to replace reranking. The practical value is a trainable relative routing layer, generation protocol, and compact signature representation, not a direct raw-HNSW killer yet.
+
+Artifacts:
+
+- `larp_hnsw_index.py`
+- `scripts/12_larp_hnsw_system_benchmark.py`
+- `experiments/larp_hnsw_system/larp_hnsw_system_benchmark.md`
+- `experiments/larp_hnsw_system/larp_hnsw_system_benchmark.csv`
+- `experiments/larp_hnsw_system/larp_hnsw_drift.csv`
+
+## BEIR SciFact Relevance Benchmark
+
+I added a real labeled retrieval benchmark using BEIR SciFact. This removes the earlier weakness where all quality numbers were either raw-neighbor preservation or metadata-label proxies.
+
+Setup:
+
+1. Download BEIR SciFact.
+2. Embed 5,183 corpus documents and 300 test queries with `sentence-transformers/all-MiniLM-L6-v2`.
+3. Build raw HNSW and LARP-HNSW with 256 anchors.
+4. Evaluate against qrels using Recall@10, MRR@10, and NDCG@10.
+
+Results:
+
+| Method | Pool | Recall@10 | MRR@10 | NDCG@10 |
+|---|---:|---:|---:|---:|
+| raw_exact | 10 | 0.7817 | 0.5840 | 0.6292 |
+| raw_hnsw | 10 | 0.7817 | 0.5840 | 0.6292 |
+| larp_relation_only | 10 | 0.6314 | 0.4356 | 0.4774 |
+| larp_hnsw_rerank | 100 | 0.7510 | 0.5750 | 0.6140 |
+| larp_hnsw_rerank | 250 | 0.7667 | 0.5813 | 0.6228 |
+| larp_hnsw_rerank | 500 | 0.7750 | 0.5829 | 0.6269 |
+
+Finding:
+
+On a labeled benchmark, LARP-HNSW with raw reranking nearly matches raw exact/HNSW by pool 500. Relation-only retrieval remains much worse. This supports the routing-layer claim and rejects the direct replacement claim.
+
+Artifacts:
+
+- `scripts/14_beir_scifact_benchmark.py`
+- `experiments/beir_scifact/beir_scifact_benchmark.md`
+- `experiments/beir_scifact/beir_scifact_benchmark.csv`
+
+## Bilinear Relation-Only Metric
+
+I tested the next hypothesis: the relation signatures contain the neighbor information, but plain cosine over signatures fails to rank the final top-k because it cannot model correlations between anchors.
+
+Setup:
+
+1. Use the 10k MiniLM embedding run.
+2. Select 256 farthest anchors from the first 8,000 base documents.
+3. Build row-zscore relation signatures for all 10k documents.
+4. Train on 2,000 base-document queries.
+5. Evaluate on 1,000 held-out queries from later documents.
+6. No raw rerank at evaluation time.
+
+Methods:
+
+- `cosine_relation`: plain cosine over relation signatures.
+- `contrastive_bilinear`: train `project(sig) = normalize(sig @ L)` with raw-neighbor positives and hard relation negatives.
+- `ridge_bilinear`: solve a ridge regression from relation signatures to raw embeddings, then rank by cosine in the projected relation-only space. Scoring is still bilinear: `score(q,d) = sig(q)^T A A^T sig(d)`.
+
+Results:
+
+| Method | Pool 10 | Pool 25 | Pool 50 | Pool 100 | Pool 250 |
+|---|---:|---:|---:|---:|---:|
+| cosine_relation | 0.6236 | 0.8176 | 0.9033 | 0.9534 | 0.9841 |
+| contrastive_bilinear | 0.5931 | 0.7826 | 0.8683 | 0.9215 | 0.9673 |
+| ridge_bilinear | 0.8314 | 0.9846 | 0.9975 | 0.9995 | 1.0000 |
+
+Finding:
+
+This is the strongest evidence so far for relation-signature top-k. The naive contrastive bilinear metric overfits or distorts the held-out relation geometry, but ridge-distilled bilinear recovers much more of the raw top-k ordering without raw reranking. Relation-only top-10 is still not exact, but `0.8314` is a different regime than the earlier `0.55-0.64`.
+
+Artifacts:
+
+- `scripts/15_bilinear_relation_metric.py`
+- `experiments/bilinear_relation_metric/bilinear_relation_metric.md`
+- `experiments/bilinear_relation_metric/bilinear_relation_metric.csv`
+- `experiments/bilinear_relation_metric/ridge_bilinear_projection.npy`
+
+## Scale Test
+
+I added a scale benchmark to separate actual smaller-set quality from 100k/200k mechanics. The 1k, 3k, and 10k rows use real subsets from the existing MiniLM embedding run. The 100k and 200k rows use noisy resampling of the existing 10k embeddings, so they are valid for build/search/memory mechanics but not quality claims.
+
+Settings:
+
+- 1,024 anchors
+- ridge `0.03`
+- relation-only ridge-bilinear projected vectors
+- HNSW over projected relation vectors
+- 500 eval/mechanics queries
+
+Results:
+
+| Docs | Mode | Pool-10 Recall | Pool-25 Recall | HNSW Build | HNSW ms/query | Vector MB |
+|---:|---|---:|---:|---:|---:|---:|
+| 1,000 | real subset | 0.8670 | 0.9985 | 0.06 s | 0.178 | 1.5 |
+| 3,000 | real subset | 0.9070 | 0.9992 | 0.17 s | 0.542 | 4.6 |
+| 10,000 | real subset | 0.9224 | 0.9992 | 1.11 s | 0.647 | 15.4 |
+| 100,000 | synthetic mechanics | n/a | n/a | 20.51 s | 0.570 | 153.6 |
+| 200,000 | synthetic mechanics | n/a | n/a | 42.15 s | 0.505 | 307.2 |
+
+Finding:
+
+The relation index mechanics are not scary at 100k-200k chunks. The expensive part for a real repository is embedding and chunk extraction, not relation projection or HNSW search. For quality, the available real subset results improve with size, reaching 0.9224 relation-only top-10 recall at 10k and nearly perfect pool-25 containment.
+
+Artifacts:
+
+- `scripts/17_scale_relation_index.py`
+- `experiments/relation_index_scale/relation_index_scale.md`
+- `experiments/relation_index_scale/relation_index_scale.csv`
+
+## Real 100k Chunk Scale Test
+
+I then built a real 100k chunk corpus from the existing CodeXGLUE-derived 10k snippet corpus using overlapping code chunks. This is not 100k unique repositories or files; it is 100k real text/code chunks derived from real snippets, which is the closer shape for a file-save/commit-time chunk index.
+
+Settings:
+
+- Source: `experiments/tenk_minilm_candidate/data/processed/hf_google_code_x_glue_ct_code_to_text_n10000_seed7.jsonl`
+- Chunking: 220 chars, 30-char stride, 40-char minimum
+- Embedding model: `sentence-transformers/all-MiniLM-L6-v2`
+- Embeddings: 100,000 x 384 float32, 153.6 MB
+- Anchors: 1,024 farthest anchors from the training split
+- Metric: row-zscored anchor relations projected with ridge-bilinear distillation, ridge `0.03`
+- Evaluation: 500 held-out later-chunk queries per size, exact raw embedding top-10 as truth
+
+Results:
+
+| Docs | Method | Pool-10 Recall | Pool-25 Recall | Pool-10 All Top-10 | Pool-25 All Top-10 | HNSW Build | HNSW ms/query |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1,000 | ridge_bilinear | 0.9165 | 0.9875 | 0.4750 | 0.9200 | 0.05 s | 0.019 |
+| 3,000 | ridge_bilinear | 0.9472 | 0.9996 | 0.5720 | 0.9960 | 0.12 s | 0.030 |
+| 10,000 | ridge_bilinear | 0.9658 | 0.9998 | 0.7080 | 0.9980 | 0.62 s | 0.045 |
+| 100,000 | ridge_bilinear | 0.9804 | 1.0000 | 0.8100 | 1.0000 | 10.87 s | 0.115 |
+
+Finding:
+
+The ridge-bilinear relation metric did not collapse at 100k. On this chunked corpus, relation-only top-k improved with scale: pool-10 recall reached `0.9804`, and pool-25 contained the full exact raw top-10 for all sampled 100k queries. That is the first result here that looks like a plausible relation-signature top-k index rather than just a broad candidate router.
+
+Caveat:
+
+The corpus has overlapping chunks from 10k source snippets, so it is easier than 100k fully independent documents. The next validation should use a larger independent corpus or a large repository/document dump with natural chunk boundaries.
+
+Artifacts:
+
+- `scripts/18_real_chunk_corpus_embed.py`
+- `scripts/run_real_100k_relation_test.cmd`
+- `scripts/run_real_100k_relation_test.ps1`
+- `experiments/real_100k_chunks/relation_index_scale/relation_index_scale.md`
+- `experiments/real_100k_chunks/relation_index_scale/relation_index_scale.csv`
+
+## Real Distinct 100k/200k CodeXGLUE Test
+
+To remove the overlap-chunk saturation issue, I pulled the Hugging Face `google/code_x_glue_ct_code_to_text` Python train Parquet shards and built corpora from distinct source rows. There is no noisy resampling and no overlapping chunk expansion in this run: one dataset row becomes one embedded item, deduped by SHA-256 of the code text.
+
+Dataset:
+
+- Source files: `python/train-00000-of-00002.parquet`, `python/train-00001-of-00002.parquet`
+- Distinct processed corpora: 100,000 rows and 200,000 rows
+- Scanned rows: 200,000
+- Distinct rows accepted: 200,000
+- 100k JSONL: 164.6 MB
+- 200k JSONL: 331.4 MB
+- 200k embedding matrix: 200,000 x 384 float32, 307.2 MB
+
+Settings:
+
+- Embedding model: `sentence-transformers/all-MiniLM-L6-v2`
+- Max tokens: 128
+- Anchors: 1,024 farthest anchors from the training split
+- Metric: row-zscored anchor relations projected with ridge-bilinear distillation, ridge `0.03`
+- Evaluation: 500 held-out later-row queries per size, exact raw embedding top-10 as truth
+
+Results:
+
+| Docs | Method | Pool-10 Recall | Pool-25 Recall | Pool-10 All Top-10 | Pool-25 All Top-10 | HNSW Build | HNSW ms/query |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 100,000 | cosine_relation | 0.6038 | 0.7898 | 0.0120 | 0.2300 | n/a | n/a |
+| 100,000 | ridge_bilinear | 0.9638 | 1.0000 | 0.6760 | 1.0000 | 21.89 s | 0.184 |
+| 200,000 | cosine_relation | 0.5636 | 0.7630 | 0.0060 | 0.1720 | n/a | n/a |
+| 200,000 | ridge_bilinear | 0.9614 | 1.0000 | 0.6440 | 1.0000 | 51.83 s | 0.201 |
+
+Finding:
+
+The saturated overlap result was too flattering, but the core signal survived. On 200k distinct real code examples, plain cosine over relation signatures is not enough. Ridge-bilinear relation projection is the difference-maker: relation-only pool-10 recall stays around `0.96` at both 100k and 200k, and pool-25 contains the full exact raw top-10 for every sampled query.
+
+## Raw Vector Search Baseline
+
+I then checked the same 100k/200k distinct CodeXGLUE embeddings against direct raw vector search. The truth set is exact cosine top-10 over raw MiniLM embeddings. This is the baseline the relation method has to beat if it is meant to be a primary search backend.
+
+Settings:
+
+- Same 100k and 200k distinct CodeXGLUE Python rows
+- Same `sentence-transformers/all-MiniLM-L6-v2` embeddings
+- Raw HNSW: cosine, `M=32`, `ef_construction=200`, `ef_search=128`
+- Relation HNSW: same HNSW params over ridge-bilinear projected relation vectors
+- 500 held-out queries per size
+
+Direct top-10 comparison:
+
+| Docs | Method | Recall of Exact Raw Top-10 | All Top-10 Contained | Build | Prep | ms/query | Vector MB |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 100,000 | raw_exact | 1.0000 | 1.0000 | 0.00 s | 0.00 s | 1.469 | 153.6 |
+| 100,000 | raw_hnsw | 0.9978 | 0.9840 | 29.44 s | 0.00 s | 0.365 | 153.6 |
+| 100,000 | ridge_relation_hnsw | 0.9550 | 0.5940 | 23.58 s | 22.30 s | 0.196 | 153.6 |
+| 200,000 | raw_exact | 1.0000 | 1.0000 | 0.00 s | 0.00 s | 2.858 | 307.2 |
+| 200,000 | raw_hnsw | 0.9924 | 0.9560 | 56.13 s | 0.00 s | 0.224 | 307.2 |
+| 200,000 | ridge_relation_hnsw | 0.9584 | 0.6260 | 57.10 s | 28.51 s | 0.226 | 307.2 |
+
+Pool-25 candidate comparison:
+
+| Docs | Method | Recall of Exact Raw Top-10 | All Top-10 Contained |
+|---:|---|---:|---:|
+| 100,000 | raw_hnsw | 0.9978 | 0.9840 |
+| 100,000 | ridge_relation_hnsw | 0.9970 | 0.9740 |
+| 200,000 | raw_hnsw | 0.9924 | 0.9560 |
+| 200,000 | ridge_relation_hnsw | 0.9940 | 0.9540 |
+
+Finding:
+
+Raw HNSW wins as the primary top-10 search backend. Ridge-bilinear relation HNSW is not superior direct vector search: it has lower top-10 recall, similar memory, and extra projection/anchor prep cost. Its best remaining role is small-pool routing: at pool 25 it nearly matches raw HNSW containment of exact raw top-10 neighbors.
+
+Artifacts:
+
+- `scripts/19_build_distinct_hf_code_corpus.py`
+- `scripts/20_embed_jsonl_corpus.py`
+- `scripts/21_raw_vector_search_baseline.py`
+- `scripts/run_real_distinct_200k_test.cmd`
+- `scripts/run_real_distinct_200k_embed_scale.cmd`
+- `experiments/real_distinct_hf_code/data/hf_code_x_glue_python_distinct_manifest.json`
+- `experiments/real_distinct_hf_code/relation_index_scale/relation_index_scale.md`
+- `experiments/real_distinct_hf_code/relation_index_scale/relation_index_scale.csv`
+- `experiments/real_distinct_hf_code/raw_vector_baseline/raw_vector_search_baseline.md`
+- `experiments/real_distinct_hf_code/raw_vector_baseline/raw_vector_search_baseline.csv`
+
+## Ten-Step Completion Map
+
+| Step | Status | Evidence |
+|---:|---|---|
+| 1. Baseline against real ANN | Done | Raw HNSW benchmark in `experiments/larp_hnsw_system/larp_hnsw_system_benchmark.md`. |
+| 2. Real ANN backend for signatures | Done | `larp_hnsw_index.py` uses `hnswlib` for relative signatures and raw embeddings. |
+| 3. Dynamic insert test | Done | 8k build plus 2k inserts in `scripts/12_larp_hnsw_system_benchmark.py`. |
+| 4. Anchor drift detection | Done | `LARPHNSWIndex.drift_stats()` and `larp_hnsw_drift.csv`. |
+| 5. Generation protocol | Done | `MultiGenerationLARP` and multi-generation benchmark row. |
+| 6. Relation-only failure addressed | Done | Relation-only recall reported separately: 0.6383 at pool 10 in the final HNSW benchmark. |
+| 7. Relevance benchmark | Done | BEIR SciFact benchmark in `experiments/beir_scifact/beir_scifact_benchmark.md`. |
+| 8. Compression story | Done | Memory estimates for raw and signature formats. |
+| 9. Learned anchor generalization | Done | Three-seed learned-anchor report in `experiments/learned_anchor_seed_report`. |
+| 10. Product-shaped API | Done | `LARPHNSWIndex.fit_embeddings`, `insert_embeddings`, `search_embedding`, `search_text`, `save`, `load`; save/load verified locally. |
+
 ## Bottom Line
 
 The hypothesis is partly alive, but not in the strongest form.

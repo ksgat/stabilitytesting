@@ -26,10 +26,17 @@ env/
 # Generated experiment artifacts
 /outputs/
 /experiments/*/data/
+/experiments/*/embeddings/
 /experiments/*/outputs/embeddings/
 /experiments/*/anchor_ablation/*.npy
 /experiments/*/anchor_ablation_tight/*.npy
 /experiments/*/larp_index_demo/saved_index/*.npy
+/experiments/learned_anchor_smoke/
+/experiments/larp_hnsw_smoke/
+/experiments/bilinear_relation_smoke/
+/experiments/relation_index_scale_smoke/
+/experiments/*/saved_larp_hnsw_index/
+/experiments/beir_scifact/*.npy
 
 # Keep experiment summaries, tables, and plots trackable if desired.
 !/experiments/*/outputs/
