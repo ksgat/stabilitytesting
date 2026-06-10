@@ -1,0 +1,11 @@
+count,query_type,recall_at_10,system
+1,error_handling,0.3,raw_hnsw_low_ef
+1,medium,0.8,raw_hnsw_low_ef
+1,error_handling,0.4,ridge_relation_pool25
+1,medium,0.9,ridge_relation_pool25
+1,error_handling,0.3,ridge_relation_pool50
+1,medium,0.8,ridge_relation_pool50
+1,error_handling,0.3,bm25_dense_hybrid
+1,medium,0.8,bm25_dense_hybrid
+1,error_handling,0.2,cluster_ivf_baseline
+1,medium,0.8,cluster_ivf_baseline

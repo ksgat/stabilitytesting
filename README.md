@@ -30,6 +30,36 @@ So the final conclusion is:
 
 > Fixed anchor-relative signatures do not beat raw vector search as a primary top-k index. Ridge-bilinear projection makes them useful as a compact semantic routing/candidate layer, but not as a standalone superior search backend.
 
+## Focused Router/Rerank Result
+
+I ran one more product-shaped test under `relation_router_rerank_test`: every system only had to route candidates, then the same cross-encoder reranker reranked the candidate set. This changes the question from "can relation vectors replace raw vector search?" to "can relation routing win on some operational axis after reranking?"
+
+Setup:
+
+- 100,000 distinct CodeXGLUE Python rows
+- 100 held-out queries
+- Relevance target: exact raw-embedding top-10 neighbors
+- Final reranker: `cross-encoder/ms-marco-MiniLM-L-6-v2` for all systems
+- Candidate routers: low-ef raw HNSW, ridge-relation HNSW at pool 25/50, BM25+dense hybrid, and centroid/IVF routing
+
+Result:
+
+| System | Candidate Source | Pool | Recall@10 | MRR@10 | NDCG@10 | Candidate Containment | ms/query | Build | Update ms/doc |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| raw_hnsw_low_ef | raw vectors | 50 | 0.4200 | 0.8061 | 0.4800 | 0.9300 | 1315.119 | 30.60 s | 0.3141 |
+| ridge_relation_pool25 | relation HNSW | 25 | 0.5500 | 0.8778 | 0.6008 | 0.9600 | 652.415 | 23.54 s | 0.3370 |
+| ridge_relation_pool50 | relation HNSW | 50 | 0.4220 | 0.8048 | 0.4816 | 0.9600 | 1302.557 | 23.54 s | 0.3370 |
+| bm25_dense_hybrid | BM25 + raw dense | 50 | 0.4630 | 0.8262 | 0.5202 | 1.0000 | 1330.860 | 8.01 s | n/a |
+| cluster_ivf_baseline | centroid routing | 50 | 0.3330 | 0.7505 | 0.3905 | 0.2500 | 1427.986 | 41.03 s | 0.0095 |
+
+This finds a narrow use case: `ridge_relation_pool25` is the best router in this setup. It beats low-ef raw HNSW, BM25+dense hybrid, and centroid routing on final Recall@10/MRR@10/NDCG@10 while using only 25 candidates. It is also much faster than the 50-candidate cross-encoder systems because it reranks half as many pairs.
+
+Caveat: the cross-encoder is an MS MARCO reranker, not a code-specialized reranker, so absolute final quality is low. The comparison is still useful because every candidate source uses the same final reranker.
+
+This does not overturn the direct-search result. The relation layer is still not a superior standalone top-k backend. The defensible product role is:
+
+> low-latency semantic candidate routing before a stronger reranker.
+
 ## What I Thought I Was Doing
 
 The original idea was that embeddings might be converted into stable relative coordinates: instead of storing/searching raw embeddings directly, represent every document by its relations to a fixed anchor set.

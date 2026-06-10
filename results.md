@@ -727,6 +727,44 @@ Finding:
 
 Raw HNSW wins as the primary top-10 search backend. Ridge-bilinear relation HNSW is not superior direct vector search: it has lower top-10 recall, similar memory, and extra projection/anchor prep cost. Its best remaining role is small-pool routing: at pool 25 it nearly matches raw HNSW containment of exact raw top-10 neighbors.
 
+## relation_router_rerank_test
+
+I changed the objective from direct nearest-neighbor replacement to product-style candidate routing. Each system produces candidates, then the same final cross-encoder reranker reranks the candidates. The question is whether relation routing wins on any operational axis: lower latency, smaller candidate pool, better reranked quality at a fixed budget, better update cost, or useful failure profile.
+
+Setup:
+
+- 100,000 distinct CodeXGLUE Python rows
+- 100 held-out queries
+- Relevance: exact raw-embedding top-10 neighbors
+- Reranker: `cross-encoder/ms-marco-MiniLM-L-6-v2`
+- Systems: low-ef raw HNSW, ridge-relation HNSW pool 25/50, BM25+dense hybrid, centroid/IVF routing
+
+Results:
+
+| System | Candidate Source | Pool | Recall@10 | MRR@10 | NDCG@10 | Candidate Containment | ms/query | Build | Update ms/doc |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| raw_hnsw_low_ef | raw vectors | 50 | 0.4200 | 0.8061 | 0.4800 | 0.9300 | 1315.119 | 30.60 s | 0.3141 |
+| ridge_relation_pool25 | relation HNSW | 25 | 0.5500 | 0.8778 | 0.6008 | 0.9600 | 652.415 | 23.54 s | 0.3370 |
+| ridge_relation_pool50 | relation HNSW | 50 | 0.4220 | 0.8048 | 0.4816 | 0.9600 | 1302.557 | 23.54 s | 0.3370 |
+| bm25_dense_hybrid | BM25 + raw dense | 50 | 0.4630 | 0.8262 | 0.5202 | 1.0000 | 1330.860 | 8.01 s | n/a |
+| cluster_ivf_baseline | centroid routing | 50 | 0.3330 | 0.7505 | 0.3905 | 0.2500 | 1427.986 | 41.03 s | 0.0095 |
+
+Finding:
+
+This is the narrowest positive result. `ridge_relation_pool25` beats every other tested router after cross-encoder reranking: better Recall@10, MRR@10, NDCG@10, strong candidate containment, and lower latency because it only reranks 25 candidates. The BM25+dense hybrid has perfect containment, but the MS MARCO cross-encoder does not turn that larger pool into better final quality here.
+
+Limitation:
+
+The cross-encoder is not code-specialized, so absolute final quality is low. The router comparison is still useful because every system uses the same reranker.
+
+Artifacts:
+
+- `scripts/22_relation_router_rerank_test.py`
+- `scripts/run_relation_router_rerank_cross_encoder.cmd`
+- `experiments/relation_router_rerank_cross_encoder/relation_router_rerank_test.md`
+- `experiments/relation_router_rerank_cross_encoder/relation_router_rerank_summary.csv`
+- `experiments/relation_router_rerank_cross_encoder/relation_router_rerank_failures.csv`
+
 Artifacts:
 
 - `scripts/19_build_distinct_hf_code_corpus.py`
